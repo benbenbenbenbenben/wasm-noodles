@@ -3,7 +3,7 @@
 `wasm-noodles` is a small Go CLI that compiles a `.wasm` module with Wazero's compiler engine and writes either:
 
 - the raw machine-code bytes Wazevo emitted, or
-- a minimal ELF relocatable object that wraps those bytes in a standard container.
+- a minimal linked ELF executable that jumps directly into the first compiled function.
 
 Each output also gets a JSON metadata sidecar.
 
@@ -11,7 +11,7 @@ Each output also gets a JSON metadata sidecar.
 
 ```bash
 go run ./cmd/wasm-noodles -input ./module.wasm -output ./module.bin -format raw -target linux-amd64
-go run ./cmd/wasm-noodles -input ./module.wasm -output ./module.o -format elf -target linux-amd64
+go run ./cmd/wasm-noodles -input ./module.wasm -output ./module -format elf -target linux-amd64
 ```
 
 ## Output formats
@@ -27,25 +27,25 @@ This is the closest representation to the compiled code in memory, but it is not
 
 ### `-format elf`
 
-Writes a minimal ELF relocatable object:
+Writes a minimal linked ELF executable:
 
-- `module.o`: an `ET_REL` ELF64 file with:
-  - a `.text` section containing the emitted machine code
-  - a `.symtab` section
-  - a `.strtab` section
-  - a `.shstrtab` section
-- `module.o.json`: metadata including target, function offsets, raw code size, and final file size
+- `module`: an `ET_EXEC` ELF64 file for `linux-amd64`
+- `module.json`: metadata including target, function offsets, raw code size, and final file size
 
-Function symbols are currently synthesized as `wasm_function_0`, `wasm_function_1`, and so on, based on Wazero's function offsets.
+The executable entry point loads a tiny wazero-compatible execution context, calls the first compiled function, and exits the process with either:
+
+- the function's integer return value, or
+- zero when the first function returns no value.
 
 ## Current limitations
 
-- The ELF output is a **relocatable object**, not a fully linked executable.
-- The `.text` section contains Wazero-generated machine code, but this project does **not** yet emit relocations, a full runtime shim, or an entry point suitable for direct execution.
+- Standalone ELF output currently requires `linux-amd64`.
+- The executable path currently supports only self-contained modules whose first defined function:
+  - has no parameters
+  - returns at most one integer result (`i32` or `i64`), or no result
+  - does not require memories, tables, globals, imports, element segments, data segments, or a start function
 - Targets must match the host that runs the CLI because Wazero emits machine code for the current `GOOS/GOARCH`.
-- ELF output currently supports the architectures Wazero already emits here and that this wrapper maps to ELF machine types:
-  - `amd64`
-  - `arm64`
+- Raw output still works on any host/target combination that Wazero can compile locally.
 
 ## Metadata example
 
@@ -58,9 +58,9 @@ Function symbols are currently synthesized as `wasm_function_0`, `wasm_function_
   "engine": "wazevo",
   "function_offsets": [0],
   "code_size": 59,
-  "output_size": 520,
-  "output_path": "./module.o",
-  "metadata_path": "./module.o.json"
+  "output_size": 4216,
+  "output_path": "./module",
+  "metadata_path": "./module.json"
 }
 ```
 
