@@ -15,6 +15,14 @@ const (
 	elfBaseVaddr      = 0x400000
 	execCtxSize       = 1184
 	moduleCtxSize     = 16
+	wasmTypeFormFunc  = 0x60
+	wasmTypeI32       = 0x7f
+	wasmTypeI64       = 0x7e
+)
+
+var (
+	wasmMagic   = []byte{0x00, 0x61, 0x73, 0x6d}
+	wasmVersion = []byte{0x01, 0x00, 0x00, 0x00}
 )
 
 type programHeader struct {
@@ -34,10 +42,10 @@ type standaloneEntry struct {
 
 func buildELFExecutable(wasmBytes []byte, compiled *wazero.CompiledMachineCode) ([]byte, error) {
 	if compiled.GOOS != "linux" || compiled.GOARCH != "amd64" {
-		return nil, fmt.Errorf("standalone ELF executables currently require linux-amd64; got %s-%s", compiled.GOOS, compiled.GOARCH)
+		return nil, fmt.Errorf("Standalone ELF executables currently require linux-amd64; got %s-%s", compiled.GOOS, compiled.GOARCH)
 	}
 	if len(compiled.FunctionOffsets) == 0 {
-		return nil, fmt.Errorf("compiled module did not contain any functions")
+		return nil, fmt.Errorf("Compiled module did not contain any functions")
 	}
 
 	entry, err := analyzeStandaloneEntry(wasmBytes)
@@ -68,10 +76,6 @@ func buildELFExecutable(wasmBytes []byte, compiled *wazero.CompiledMachineCode) 
 	dataFileOffset := uint64(dataOffset)
 	dataFileSize := uint64(len(data))
 
-	if err := writeELFHeader(out[:elfHeaderSize], uint16(elf.ET_EXEC), elf.EM_X86_64, uint64(textVaddr), elfHeaderSize, 3); err != nil {
-		return nil, err
-	}
-
 	headers := []programHeader{
 		{
 			typ:    uint32(elf.PT_LOAD),
@@ -98,6 +102,10 @@ func buildELFExecutable(wasmBytes []byte, compiled *wazero.CompiledMachineCode) 
 			flags: uint32(elf.PF_R | elf.PF_W),
 			align: 16,
 		},
+	}
+
+	if err := writeELFHeader(out[:elfHeaderSize], uint16(elf.ET_EXEC), elf.EM_X86_64, uint64(textVaddr), elfHeaderSize, uint16(len(headers))); err != nil {
+		return nil, err
 	}
 
 	phoff := elfHeaderSize
@@ -268,7 +276,7 @@ func analyzeStandaloneEntry(wasmBytes []byte) (standaloneEntry, error) {
 	case 0:
 		return standaloneEntry{hasResult: false}, nil
 	case 1:
-		if fn.results[0] != 0x7f && fn.results[0] != 0x7e {
+		if fn.results[0] != wasmTypeI32 && fn.results[0] != wasmTypeI64 {
 			return standaloneEntry{}, fmt.Errorf("standalone ELF executable requires the first defined function to return i32, i64, or nothing")
 		}
 		return standaloneEntry{hasResult: true}, nil
@@ -295,10 +303,10 @@ func (p *wasmParser) readHeader() error {
 	if len(p.data) < 8 {
 		return fmt.Errorf("malformed wasm module: file too short")
 	}
-	if string(p.data[:4]) != "\x00asm" {
+	if !equalBytes(p.data[:4], wasmMagic) {
 		return fmt.Errorf("malformed wasm module: invalid magic number")
 	}
-	if !equalBytes(p.data[4:8], []byte{0x01, 0x00, 0x00, 0x00}) {
+	if !equalBytes(p.data[4:8], wasmVersion) {
 		return fmt.Errorf("malformed wasm module: unsupported version")
 	}
 	p.offset = 8
@@ -346,7 +354,7 @@ func (p *wasmParser) readTypeSection(sectionEnd int) ([]wasmFuncType, error) {
 		if err != nil {
 			return nil, err
 		}
-		if form != 0x60 {
+		if form != wasmTypeFormFunc {
 			return nil, fmt.Errorf("malformed wasm module: unsupported type form 0x%x", form)
 		}
 		paramCount, err := p.readVarUint32()
