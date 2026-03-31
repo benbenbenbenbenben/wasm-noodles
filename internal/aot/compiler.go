@@ -60,7 +60,7 @@ func CompileFile(ctx context.Context, opts Options) (*Result, error) {
 		return nil, fmt.Errorf("create output directory: %w", err)
 	}
 
-	artifact, err := buildArtifact(opts.Format, compiled)
+	artifact, err := buildArtifact(opts.Format, wasmBytes, compiled)
 	if err != nil {
 		return nil, err
 	}
@@ -136,14 +136,14 @@ func validateFormat(format string) error {
 	}
 }
 
-func buildArtifact(format string, compiled *wazero.CompiledMachineCode) ([]byte, error) {
+func buildArtifact(format string, wasmBytes []byte, compiled *wazero.CompiledMachineCode) ([]byte, error) {
 	if format == "" || format == "raw" {
 		return compiled.Code, nil
 	}
 	if format == "elf" {
-		artifact, err := buildELFObject(compiled)
+		artifact, err := buildELFExecutable(wasmBytes, compiled)
 		if err != nil {
-			return nil, fmt.Errorf("build ELF object: %w", err)
+			return nil, fmt.Errorf("build ELF executable: %w", err)
 		}
 		return artifact, nil
 	}

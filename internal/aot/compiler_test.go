@@ -5,7 +5,9 @@ import (
 	"context"
 	"debug/elf"
 	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -73,12 +75,16 @@ func TestCompileFileWritesRawMachineCodeAndMetadata(t *testing.T) {
 	}
 }
 
-func TestCompileFileWritesELFObjectAndMetadata(t *testing.T) {
+func TestCompileFileWritesELFExecutableAndMetadata(t *testing.T) {
 	t.Parallel()
+
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		t.Skip("standalone ELF executable support is currently linux-amd64 only")
+	}
 
 	dir := t.TempDir()
 	inputPath := filepath.Join(dir, "module.wasm")
-	outputPath := filepath.Join(dir, "module.o")
+	outputPath := filepath.Join(dir, "module")
 
 	if err := os.WriteFile(inputPath, testWasmModule, 0o644); err != nil {
 		t.Fatalf("write input: %v", err)
@@ -103,28 +109,17 @@ func TestCompileFileWritesELFObjectAndMetadata(t *testing.T) {
 	if f.FileHeader.Class != elf.ELFCLASS64 {
 		t.Fatalf("ELF class = %v, want ELFCLASS64", f.FileHeader.Class)
 	}
-	if f.FileHeader.Type != elf.ET_REL {
-		t.Fatalf("ELF type = %v, want ET_REL", f.FileHeader.Type)
+	if f.FileHeader.Type != elf.ET_EXEC {
+		t.Fatalf("ELF type = %v, want ET_EXEC", f.FileHeader.Type)
 	}
-	if f.Section(".text") == nil {
-		t.Fatal("expected .text section")
+	if f.Entry == 0 {
+		t.Fatal("expected non-zero ELF entry point")
 	}
-	if f.Section(".symtab") == nil {
-		t.Fatal("expected .symtab section")
+	if len(f.Progs) != 3 {
+		t.Fatalf("program header count = %d, want 3", len(f.Progs))
 	}
-	symbols, err := f.Symbols()
-	if err != nil {
-		t.Fatalf("Symbols() error = %v", err)
-	}
-	found := false
-	for _, sym := range symbols {
-		if sym.Name == "wasm_function_0" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatal("expected symbol wasm_function_0")
+	if f.Progs[2].Type != elf.PT_GNU_STACK {
+		t.Fatalf("third program header type = %v, want PT_GNU_STACK", f.Progs[2].Type)
 	}
 
 	if result.Format != "elf" {
@@ -135,6 +130,45 @@ func TestCompileFileWritesELFObjectAndMetadata(t *testing.T) {
 	}
 	if result.OutputSize <= result.CodeSize {
 		t.Fatalf("expected ELF file (%d) to be larger than raw code (%d)", result.OutputSize, result.CodeSize)
+	}
+
+	cmd := exec.Command(outputPath)
+	err = cmd.Run()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("Run() error = %v, want exit status 42", err)
+	}
+	if exitErr.ExitCode() != 42 {
+		t.Fatalf("exit code = %d, want 42", exitErr.ExitCode())
+	}
+}
+
+func TestCompileFileRejectsStandaloneExecutableWithParameters(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		t.Skip("standalone ELF executable support is currently linux-amd64 only")
+	}
+
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "module.wasm")
+	outputPath := filepath.Join(dir, "module")
+
+	if err := os.WriteFile(inputPath, testWasmModuleWithParam, 0o644); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+
+	_, err := CompileFile(context.Background(), Options{
+		InputPath:  inputPath,
+		OutputPath: outputPath,
+		Format:     "elf",
+		Target:     runtime.GOOS + "-" + runtime.GOARCH,
+	})
+	if err == nil {
+		t.Fatal("expected standalone executable validation error")
+	}
+	if got := err.Error(); got != "build ELF executable: standalone ELF executable requires the first defined function to have no parameters" {
+		t.Fatalf("error = %q", got)
 	}
 }
 
@@ -166,4 +200,13 @@ var testWasmModule = []byte{
 	0x03, 0x02, 0x01, 0x00,
 	0x07, 0x05, 0x01, 0x01, 0x66, 0x00, 0x00,
 	0x0a, 0x06, 0x01, 0x04, 0x00, 0x41, 0x2a, 0x0b,
+}
+
+var testWasmModuleWithParam = []byte{
+	0x00, 0x61, 0x73, 0x6d,
+	0x01, 0x00, 0x00, 0x00,
+	0x01, 0x06, 0x01, 0x60, 0x01, 0x7f, 0x01, 0x7f,
+	0x03, 0x02, 0x01, 0x00,
+	0x07, 0x05, 0x01, 0x01, 0x66, 0x00, 0x00,
+	0x0a, 0x06, 0x01, 0x04, 0x00, 0x20, 0x00, 0x0b,
 }
