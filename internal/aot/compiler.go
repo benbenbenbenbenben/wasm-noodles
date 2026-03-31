@@ -15,16 +15,19 @@ import (
 type Options struct {
 	InputPath  string
 	OutputPath string
+	Format     string
 	Target     string
 }
 
 type Result struct {
+	Format          string   `json:"format"`
 	Target          string   `json:"target"`
 	GOOS            string   `json:"goos"`
 	GOARCH          string   `json:"goarch"`
 	Engine          string   `json:"engine"`
 	FunctionOffsets []uint64 `json:"function_offsets"`
 	CodeSize        int      `json:"code_size"`
+	OutputSize      int      `json:"output_size"`
 	OutputPath      string   `json:"output_path"`
 	MetadataPath    string   `json:"metadata_path"`
 }
@@ -35,6 +38,9 @@ func CompileFile(ctx context.Context, opts Options) (*Result, error) {
 	}
 	if opts.OutputPath == "" {
 		return nil, fmt.Errorf("output path is required")
+	}
+	if err := validateFormat(opts.Format); err != nil {
+		return nil, err
 	}
 	if err := validateTarget(opts.Target); err != nil {
 		return nil, err
@@ -53,17 +59,24 @@ func CompileFile(ctx context.Context, opts Options) (*Result, error) {
 	if err := os.MkdirAll(filepath.Dir(opts.OutputPath), 0o755); err != nil {
 		return nil, fmt.Errorf("create output directory: %w", err)
 	}
-	if err := os.WriteFile(opts.OutputPath, compiled.Code, 0o755); err != nil {
-		return nil, fmt.Errorf("write machine code: %w", err)
+
+	artifact, err := buildArtifact(opts.Format, compiled)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(opts.OutputPath, artifact, 0o755); err != nil {
+		return nil, fmt.Errorf("write %s artifact: %w", opts.Format, err)
 	}
 
 	result := &Result{
+		Format:          opts.Format,
 		Target:          opts.Target,
 		GOOS:            compiled.GOOS,
 		GOARCH:          compiled.GOARCH,
 		Engine:          compiled.Engine,
 		FunctionOffsets: append([]uint64(nil), compiled.FunctionOffsets...),
 		CodeSize:        len(compiled.Code),
+		OutputSize:      len(artifact),
 		OutputPath:      opts.OutputPath,
 		MetadataPath:    opts.OutputPath + ".json",
 	}
@@ -112,4 +125,27 @@ func validateTarget(target string) error {
 		return fmt.Errorf("target %q is unsupported on this host; build/run on %q to emit matching machine code", target, current)
 	}
 	return nil
+}
+
+func validateFormat(format string) error {
+	switch format {
+	case "", "raw", "elf":
+		return nil
+	default:
+		return fmt.Errorf("unsupported format %q: want raw or elf", format)
+	}
+}
+
+func buildArtifact(format string, compiled *wazero.CompiledMachineCode) ([]byte, error) {
+	if format == "" || format == "raw" {
+		return compiled.Code, nil
+	}
+	if format == "elf" {
+		artifact, err := buildELFObject(compiled)
+		if err != nil {
+			return nil, fmt.Errorf("build ELF object: %w", err)
+		}
+		return artifact, nil
+	}
+	return nil, fmt.Errorf("unsupported format %q", format)
 }

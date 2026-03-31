@@ -3,6 +3,7 @@ package aot
 import (
 	"bytes"
 	"context"
+	"debug/elf"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -24,6 +25,7 @@ func TestCompileFileWritesRawMachineCodeAndMetadata(t *testing.T) {
 	result, err := CompileFile(context.Background(), Options{
 		InputPath:  inputPath,
 		OutputPath: outputPath,
+		Format:     "raw",
 		Target:     runtime.GOOS + "-" + runtime.GOARCH,
 	})
 	if err != nil {
@@ -60,8 +62,79 @@ func TestCompileFileWritesRawMachineCodeAndMetadata(t *testing.T) {
 	if metadata.Target != runtime.GOOS+"-"+runtime.GOARCH {
 		t.Fatalf("Target = %q", metadata.Target)
 	}
+	if metadata.Format != "raw" {
+		t.Fatalf("Format = %q, want raw", metadata.Format)
+	}
 	if metadata.CodeSize != len(code) {
 		t.Fatalf("metadata CodeSize = %d, want %d", metadata.CodeSize, len(code))
+	}
+	if metadata.OutputSize != len(code) {
+		t.Fatalf("metadata OutputSize = %d, want %d", metadata.OutputSize, len(code))
+	}
+}
+
+func TestCompileFileWritesELFObjectAndMetadata(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "module.wasm")
+	outputPath := filepath.Join(dir, "module.o")
+
+	if err := os.WriteFile(inputPath, testWasmModule, 0o644); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+
+	result, err := CompileFile(context.Background(), Options{
+		InputPath:  inputPath,
+		OutputPath: outputPath,
+		Format:     "elf",
+		Target:     runtime.GOOS + "-" + runtime.GOARCH,
+	})
+	if err != nil {
+		t.Fatalf("CompileFile() error = %v", err)
+	}
+
+	f, err := elf.Open(outputPath)
+	if err != nil {
+		t.Fatalf("elf.Open() error = %v", err)
+	}
+	defer f.Close()
+
+	if f.FileHeader.Class != elf.ELFCLASS64 {
+		t.Fatalf("ELF class = %v, want ELFCLASS64", f.FileHeader.Class)
+	}
+	if f.FileHeader.Type != elf.ET_REL {
+		t.Fatalf("ELF type = %v, want ET_REL", f.FileHeader.Type)
+	}
+	if f.Section(".text") == nil {
+		t.Fatal("expected .text section")
+	}
+	if f.Section(".symtab") == nil {
+		t.Fatal("expected .symtab section")
+	}
+	symbols, err := f.Symbols()
+	if err != nil {
+		t.Fatalf("Symbols() error = %v", err)
+	}
+	found := false
+	for _, sym := range symbols {
+		if sym.Name == "wasm_function_0" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected symbol wasm_function_0")
+	}
+
+	if result.Format != "elf" {
+		t.Fatalf("Format = %q, want elf", result.Format)
+	}
+	if result.CodeSize == 0 {
+		t.Fatal("expected non-zero CodeSize")
+	}
+	if result.OutputSize <= result.CodeSize {
+		t.Fatalf("expected ELF file (%d) to be larger than raw code (%d)", result.OutputSize, result.CodeSize)
 	}
 }
 
@@ -75,6 +148,14 @@ func TestValidateTargetRejectsCrossTargetRequests(t *testing.T) {
 
 	if err := validateTarget(target); err == nil {
 		t.Fatal("expected cross-target validation error")
+	}
+}
+
+func TestValidateFormatRejectsUnknownValues(t *testing.T) {
+	t.Parallel()
+
+	if err := validateFormat("pe"); err == nil {
+		t.Fatal("expected unsupported format error")
 	}
 }
 

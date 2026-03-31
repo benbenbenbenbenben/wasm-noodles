@@ -13,7 +13,8 @@ import (
 func main() {
 	var (
 		input  = flag.String("input", "", "path to the input WebAssembly module")
-		output = flag.String("output", "", "path to write the emitted machine code")
+		output = flag.String("output", "", "path to write the emitted artifact")
+		format = flag.String("format", "raw", "output format: raw or elf")
 		target = flag.String("target", runtime.GOOS+"-"+runtime.GOARCH, "target in <goos>-<goarch> form")
 	)
 	flag.Parse()
@@ -26,6 +27,7 @@ func main() {
 	result, err := aot.CompileFile(context.Background(), aot.Options{
 		InputPath:  *input,
 		OutputPath: *output,
+		Format:     *format,
 		Target:     *target,
 	})
 	if err != nil {
@@ -34,8 +36,10 @@ func main() {
 	}
 
 	fmt.Printf(
-		"wrote %d bytes of %s machine code for %s to %s\nmetadata: %s\n",
+		"wrote %s artifact (%d code bytes, %d file bytes) with %s machine code for %s to %s\nmetadata: %s\n",
+		result.Format,
 		result.CodeSize,
+		result.OutputSize,
 		result.Engine,
 		result.Target,
 		result.OutputPath,
